@@ -24,6 +24,21 @@ Pulse currently proves these pieces:
 
 This is a workflow MVP, not a full autonomous AI system yet.
 
+## AI Agent Chaos Lab
+
+The dashboard includes an opt-in Chaos Mode for the talk “Break the Agent: Chaos Engineering for AI Systems”. Faults are deterministic simulations; they never call real infrastructure and are disabled in normal investigations.
+
+Run the app with `make dev`, open `/dashboard`, and use the guided buttons:
+
+1. `Normal baseline` records a healthy investigation for comparison.
+2. `Metrics agent timeout` fails the metrics specialist and shows the supervisor continuing with degraded evidence.
+3. `Repeated invocation limit` simulates an infinite loop and stops safely after the execution limit.
+4. `Unsafe remediation gate` injects a high-risk recommendation and leaves it pending until the existing human approval flow is used.
+
+The dashboard records agent status, failures, retries, invocation counts, supervisor decisions, durations, and a timeline. `Reset demo` clears the local SQLite demo state so the sequence can be repeated.
+
+The HTTP equivalents are `POST /demo/run/baseline`, `POST /demo/run/agent_failure`, `POST /demo/run/infinite_loop`, `POST /demo/run/unsafe_remediation`, and `POST /demo/reset`.
+
 ## Architecture
 
 ```text

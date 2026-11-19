@@ -9,6 +9,7 @@ def dashboard_snapshot() -> dict[str, object]:
     approvals = list_approvals()
     latencies = [event["payload"].get("latency_ms", 0) for event in events if event["kind"] == "metric"]
     errors = [event for event in events if event["kind"] == "log"]
+    traces = [row for incident in incidents for row in incident.execution_trace]
     return {
         "active_incidents": len([item for item in incidents if item.status != "resolved"]),
         "service_health": "degraded" if incidents else "healthy",
@@ -18,4 +19,9 @@ def dashboard_snapshot() -> dict[str, object]:
         "memory_matches": sum(1 for incident in incidents if incident.context_pack and incident.context_pack.included),
         "token_usage": sum(incident.context_pack.tokens_estimated for incident in incidents if incident.context_pack),
         "agent_activity_timeline": [entry for incident in incidents for entry in incident.timeline][-6:],
+        "agent_invocations": sum(row.get("attempt", 1) for row in traces),
+        "agent_failures": sum(row.get("status") == "failed" for row in traces),
+        "agent_retries": sum(row.get("status") == "retrying" for row in traces),
+        "supervisor_decisions": sum(row.get("agent") == "supervisor" for row in traces),
+        "execution_duration_ms": round(sum(row.get("duration_ms", 0) for row in traces), 2),
     }

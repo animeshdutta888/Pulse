@@ -89,6 +89,8 @@ class Incident(BaseModel):
     context_pack: ContextPack | None = None
     remediation: RemediationRecommendation | None = None
     postmortem: dict[str, Any] | None = None
+    execution_trace: list[dict[str, Any]] = Field(default_factory=list)
+    chaos: dict[str, Any] = Field(default_factory=dict)
 
 
 class SupervisorDecision(BaseModel):

@@ -53,7 +53,9 @@ def init_db() -> None:
               findings text not null,
               context_pack text,
               remediation text,
-              postmortem text
+              postmortem text,
+              execution_trace text not null default '[]',
+              chaos text not null default '{}'
             );
             create table if not exists approvals (
               id text primary key,
@@ -81,6 +83,11 @@ def init_db() -> None:
             );
             """
         )
+        columns = {row[1] for row in conn.execute("pragma table_info(incidents)")}
+        if "execution_trace" not in columns:
+            conn.execute("alter table incidents add column execution_trace text not null default '[]'")
+        if "chaos" not in columns:
+            conn.execute("alter table incidents add column chaos text not null default '{}'")
 
 
 def reset_db() -> None:
@@ -127,7 +134,10 @@ def list_events(service: str | None = None) -> list[dict]:
 def create_incident(incident: Incident) -> Incident:
     with connect() as conn:
         conn.execute(
-            "insert into incidents values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """insert into incidents
+            (id, service, severity, status, summary, created_at, updated_at, timeline,
+             findings, context_pack, remediation, postmortem, execution_trace, chaos)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 incident.id,
                 incident.service,
@@ -141,6 +151,8 @@ def create_incident(incident: Incident) -> Incident:
                 _json(incident.context_pack.model_dump()) if incident.context_pack else None,
                 _json(incident.remediation.model_dump()) if incident.remediation else None,
                 _json(incident.postmortem) if incident.postmortem else None,
+                _json(incident.execution_trace),
+                _json(incident.chaos),
             ),
         )
     return incident
@@ -153,7 +165,8 @@ def update_incident(incident: Incident) -> Incident:
             """
             update incidents
             set severity = ?, status = ?, summary = ?, updated_at = ?, timeline = ?,
-                findings = ?, context_pack = ?, remediation = ?, postmortem = ?
+                findings = ?, context_pack = ?, remediation = ?, postmortem = ?,
+                execution_trace = ?, chaos = ?
             where id = ?
             """,
             (
@@ -166,6 +179,8 @@ def update_incident(incident: Incident) -> Incident:
                 _json(incident.context_pack.model_dump()) if incident.context_pack else None,
                 _json(incident.remediation.model_dump()) if incident.remediation else None,
                 _json(incident.postmortem) if incident.postmortem else None,
+                _json(incident.execution_trace),
+                _json(incident.chaos),
                 incident.id,
             ),
         )
@@ -181,6 +196,8 @@ def _load_incident(row: sqlite3.Row | None) -> Incident | None:
     payload["context_pack"] = json.loads(payload["context_pack"]) if payload["context_pack"] else None
     payload["remediation"] = json.loads(payload["remediation"]) if payload["remediation"] else None
     payload["postmortem"] = json.loads(payload["postmortem"]) if payload["postmortem"] else None
+    payload["execution_trace"] = json.loads(payload.get("execution_trace") or "[]")
+    payload["chaos"] = json.loads(payload.get("chaos") or "{}")
     return Incident.model_validate(payload)
 
 

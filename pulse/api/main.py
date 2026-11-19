@@ -11,6 +11,7 @@ from pulse.executor.service import run_executor
 from pulse.models import EventIn, Incident, IncidentStatus
 from pulse.observability.service import dashboard_snapshot
 from pulse.orchestration.supervisor import investigate_incident
+from pulse.orchestration.chaos import SCENARIOS
 from pulse.store import (
     add_event,
     create_incident,
@@ -158,6 +159,10 @@ def _dashboard_shell() -> str:
       .kv span:last-child { color: var(--text); text-align: right; }
       .postmortem-list div { padding: 12px 0; border-top: 1px solid var(--line); }
       .postmortem-list div:first-child { border-top: 0; padding-top: 0; }
+      .chaos-box { display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
+      .chaos-box button { min-height:70px; text-align:left; }
+      .trace { display:grid; gap:8px; }
+      .trace-row { display:grid; grid-template-columns:110px 100px 70px 1fr; gap:8px; padding:10px; border:1px solid var(--line); border-radius:12px; font-size:13px; }
       .mono { font-family: "IBM Plex Mono", "SFMono-Regular", monospace; }
       @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
     </style>
@@ -170,6 +175,15 @@ def _dashboard_shell() -> str:
           <button id="seed-btn">Seed Demo</button>
           <button id="trigger-btn" class="warn">Trigger Incident</button>
           <button id="refresh-btn" class="secondary">Refresh</button>
+        </div>
+        <div><div class="small" style="margin-bottom:8px">AI Agent Chaos Lab · controlled, simulated faults only</div>
+          <div class="chaos-box">
+            <button class="secondary" onclick="runScenario('baseline')">▶ Normal baseline</button>
+            <button class="warn" onclick="runScenario('agent_failure')">Metrics agent timeout</button>
+            <button class="warn" onclick="runScenario('infinite_loop')">Repeated invocation limit</button>
+            <button class="bad" onclick="runScenario('unsafe_remediation')">Unsafe remediation gate</button>
+            <button class="secondary" onclick="resetLab()">Reset demo</button>
+          </div>
         </div>
         <div class="status-line" id="status-line">Waiting for demo data.</div>
       </section>
@@ -195,6 +209,8 @@ def _dashboard_shell() -> str:
             <h3>Agent Findings</h3>
             <div class="finding-list" id="findings"></div>
           </article>
+          <article class="panel"><h3>Execution Trace</h3><div class="trace" id="execution-trace"></div></article>
+          <article class="panel"><h3>Baseline vs Chaos</h3><div id="comparison" class="empty">Run a normal baseline, then a chaos scenario to compare results.</div></article>
           <article class="panel">
             <h3>Postmortem Preview</h3>
             <div class="postmortem-list" id="postmortem"></div>
@@ -231,6 +247,9 @@ def _dashboard_shell() -> str:
           ["Error Events", snapshot.error_rate],
           ["Pending Approvals", snapshot.pending_approvals],
           ["Token Usage", snapshot.token_usage],
+          ["Invocations", snapshot.agent_invocations],
+          ["Failures / Retries", `${snapshot.agent_failures} / ${snapshot.agent_retries}`],
+          ["Exec Duration", `${snapshot.execution_duration_ms}ms`],
         ];
         $("metrics").innerHTML = cards.map(([label, value]) => `
           <div class="metric">
@@ -270,6 +289,20 @@ def _dashboard_shell() -> str:
             <div class="finding-evidence">${finding.evidence.join(" • ")}</div>
           </div>
         `).join("") : `<div class="empty">Investigation results will appear here.</div>`;
+      }
+
+      function renderTrace(incident) {
+        const rows = incident && incident.execution_trace || [];
+        $("execution-trace").innerHTML = rows.length ? rows.map((row) => `<div class="trace-row"><strong>${row.agent}</strong><span>${row.status}</span><span>${row.duration_ms}ms</span><span>${row.detail || `attempt ${row.attempt}`}</span></div>`).join("") : `<div class="empty">Run an investigation to see statuses, attempts, and timing.</div>`;
+      }
+
+      function renderComparison(incidents) {
+        const baseline = incidents.find((item) => !item.chaos.enabled && item.execution_trace.length);
+        const chaotic = incidents.find((item) => item.chaos.enabled && item.execution_trace.length);
+        if (!baseline || !chaotic) { $("comparison").textContent = "Run a normal baseline, then a chaos scenario to compare results."; return; }
+        const stats = (item) => ({status:item.status, duration:item.execution_trace.reduce((sum, row) => sum + (row.duration_ms || 0), 0).toFixed(2), failures:item.execution_trace.filter(row => row.status === "failed" || row.status === "terminated").length, recovery:item.status === "awaiting_approval" ? "continued to approval" : item.status === "open" ? "stopped safely" : item.status});
+        const a = stats(baseline), b = stats(chaotic);
+        $("comparison").innerHTML = `<div class="kv"><div><strong>${baseline.chaos.label || "Normal baseline"}</strong><span>Status ${a.status} · ${a.duration}ms · ${a.failures} failures</span></div><div><strong>${chaotic.chaos.label}</strong><span>Status ${b.status} · ${b.duration}ms · ${b.failures} failures</span></div><div><strong>Recovery</strong><span>${b.recovery}</span></div></div>`;
       }
 
       function renderApproval(approval) {
@@ -375,6 +408,21 @@ def _dashboard_shell() -> str:
         setStatus("Incident is live. Approval is now required before remediation.");
       }
 
+      async function runScenario(scenario) {
+        setStatus(`Running ${scenario} investigation...`);
+        const response = await fetch(`/demo/run/${scenario}`, {method:"POST"});
+        const data = await response.json();
+        if (!response.ok) { setStatus(data.detail || "Scenario failed"); return; }
+        await refresh();
+        setStatus(`${scenario}: ${data.incident.status}. Faults are simulated; no infrastructure was touched.`);
+      }
+
+      async function resetLab() {
+        await fetch("/demo/reset", {method:"POST"});
+        await refresh();
+        setStatus("Demo reset. Run a baseline or guided scenario.");
+      }
+
       async function refresh() {
         const response = await fetch("/dashboard/data");
         const data = await response.json();
@@ -382,10 +430,13 @@ def _dashboard_shell() -> str:
         state.incident = data.incident;
         state.approval = data.approval;
         state.graph = data.graph;
+        state.incidents = data.incidents;
         renderMetrics(data.snapshot);
         renderIncident(data.incident);
         renderTimeline(data.incident);
         renderFindings(data.incident);
+        renderTrace(data.incident);
+        renderComparison(data.incidents);
         renderApproval(data.approval);
         renderRemediation(data.incident, data.approval);
         renderPostmortem(data.incident);
@@ -458,6 +509,7 @@ def dashboard_data() -> dict:
         "incident": incident,
         "approval": approval,
         "graph": memory_graph(),
+        "incidents": [item.model_dump() for item in incidents],
     }
 
 
@@ -550,3 +602,21 @@ def trigger_incident() -> dict:
         "approval": approval.model_dump() if approval else None,
         "decision": decision.model_dump(),
     }
+
+
+@app.post("/demo/run/{scenario}")
+def run_demo_scenario(scenario: str) -> dict:
+    if scenario != "baseline" and scenario not in SCENARIOS:
+        raise HTTPException(status_code=404, detail="Unknown demo scenario")
+    service = f"checkout-{scenario}-{uuid.uuid4().hex[:4]}"
+    _seed_events(service)
+    incident = _ensure_incident(service)
+    investigated, approval, decision = investigate_incident(incident.id, None if scenario == "baseline" else scenario)
+    return {"incident": investigated.model_dump(), "approval": approval.model_dump() if approval else None,
+            "decision": decision.model_dump()}
+
+
+@app.post("/demo/reset")
+def reset_demo() -> dict[str, str]:
+    reset_db()
+    return {"status": "reset"}
